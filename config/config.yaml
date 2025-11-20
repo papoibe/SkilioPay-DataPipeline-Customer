@@ -1,0 +1,150 @@
+# SkilioPay Churn Prediction Pipeline Configuration
+
+# Data Sources
+data_sources:
+  csv:
+    input_path: "data/raw/churn_dataset.csv"
+    output_path: "data/raw/"
+    file_format: "csv"
+    delimiter: ","
+    encoding: "utf-8"
+  
+  api:
+    base_url: "https://api.skiliopay.com"
+    endpoints:
+      users: "/api/v1/users"
+      transactions: "/api/v1/transactions"
+    rate_limit: 100  # requests per minute
+    timeout: 30  # seconds
+
+# Data Processing
+processing:
+  validation:
+    schema_file: "config/schemas/churn_schema.json"
+    quality_checks: true
+    data_profiling: true
+  
+  transformations:
+    feature_engineering: true
+    outlier_detection: true
+    missing_value_handling: "impute"
+    categorical_encoding: "onehot"
+  
+  partitioning:
+    strategy: "date"  # date, hash, range
+    columns: ["created_at"]
+    partition_size: "1GB"
+
+# Storage
+storage:
+  local:
+    base_path: "data/"
+    raw_format: "parquet"
+    processed_format: "parquet"
+    features_format: "parquet"
+  
+  database:
+    postgresql:
+      host: "localhost"
+      port: 5432
+      database: "skilio_pay"
+      username: "postgres"
+      password: "password"
+      schema: "churn_prediction"
+    
+    mongodb:
+      host: "localhost"
+      port: 27017
+      database: "skilio_pay"
+      collection: "user_features"
+  
+  cloud:
+    s3:
+      bucket: "skilio-pay-data"
+      region: "ap-southeast-1"
+      access_key: "${AWS_ACCESS_KEY_ID}"
+      secret_key: "${AWS_SECRET_ACCESS_KEY}"
+
+# ML Pipeline
+ml:
+  model:
+    algorithm: "xgboost"  # xgboost, lightgbm, random_forest
+    target_column: "churn_label"
+    test_size: 0.2
+    validation_size: 0.2
+    random_state: 42
+  
+  features:
+    categorical: ["country", "city", "marketing_source", "app_version_major"]
+    numerical: ["age", "reg_days", "sessions_30d", "sessions_90d", "aov_2024", "gmv_2024"]
+    target: "churn_label"
+  
+  hyperparameters:
+    xgboost:
+      n_estimators: 100
+      max_depth: 6
+      learning_rate: 0.1
+      subsample: 0.8
+      colsample_bytree: 0.8
+  
+  evaluation:
+    metrics: ["accuracy", "precision", "recall", "f1", "roc_auc"]
+    cross_validation: 5
+    early_stopping: 10
+
+# API Configuration
+api:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  reload: true
+  log_level: "info"
+  
+  endpoints:
+    health: "/health"
+    predict: "/predict"
+    batch_predict: "/batch_predict"
+    model_info: "/model/info"
+
+# Monitoring
+monitoring:
+  logging:
+    level: "INFO"
+    format: "json"
+    file: "logs/pipeline.log"
+  
+  metrics:
+    prometheus:
+      port: 9090
+      endpoint: "/metrics"
+    
+    data_quality:
+      enabled: true
+      checks: ["completeness", "uniqueness", "validity", "consistency"]
+  
+  alerts:
+    email:
+      smtp_server: "smtp.gmail.com"
+      smtp_port: 587
+      username: "${EMAIL_USERNAME}"
+      password: "${EMAIL_PASSWORD}"
+      recipients: ["admin@skiliopay.com"]
+
+# Orchestration
+orchestration:
+  airflow:
+    dag_folder: "dags/"
+    max_active_runs: 1
+    catchup: false
+    schedule_interval: "@daily"
+  
+  prefect:
+    work_pool: "skilio-pay-pool"
+    retry_count: 3
+    retry_delay: 300  # seconds
+
+# Environment
+environment:
+  name: "development"  # development, staging, production
+  debug: true
+  log_level: "DEBUG"
