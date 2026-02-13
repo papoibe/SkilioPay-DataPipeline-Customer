@@ -65,4 +65,9 @@ docker-compose.override.yml
 *.bak
 *.tmp
 
+# Removed from tracking
+.agent/
+.streamlit/
+notebooks/
+
 
