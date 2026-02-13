@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
-from ..utils.logging_config import get_logger
+from utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
@@ -252,10 +252,12 @@ class FeatureEngineer:
                     df_encoded[f"{col}_encoded"] = self.label_encoders[col].fit_transform(
                         df_encoded[col].astype(str)
                     )
+                    # Drop original column after encoding
+                    df_encoded = df_encoded.drop(col, axis=1)
                 else:
                     # One-hot encoding for nominal categories
                     dummies = pd.get_dummies(df_encoded[col], prefix=col)
-                    df_encoded = pd.concat([df_encoded, dummies], axis=1)
+                    df_encoded = pd.concat([df_encoded.drop(col, axis=1), dummies], axis=1)
         
         logger.info("Categorical features encoded")
         return df_encoded
@@ -288,7 +290,7 @@ def main():
     args = parser.parse_args()
     
     # Load configuration
-    from ..utils.config import ConfigManager
+    from utils.config import ConfigManager
     config_manager = ConfigManager()
     config = config_manager.load_config(args.config)
     

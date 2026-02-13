@@ -47,9 +47,9 @@ storage:
     postgresql:
       host: "localhost"
       port: 5432
-      database: "skilio_pay"
+      database: "SkilioPay_Customer"
       username: "postgres"
-      password: "password"
+      password: "Postgres@123"
       schema: "churn_prediction"
     
     mongodb:
@@ -75,7 +75,7 @@ ml:
     random_state: 42
   
   features:
-    categorical: ["country", "city", "marketing_source", "app_version_major"]
+    categorical: ["country", "city", "marketing_source", "app_version_major", "reg_recency_category", "last_order_category", "rfm_category", "rfm_segment"]
     numerical: ["age", "reg_days", "sessions_30d", "sessions_90d", "aov_2024", "gmv_2024"]
     target: "churn_label"
   

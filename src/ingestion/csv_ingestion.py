@@ -11,9 +11,10 @@ from datetime import datetime
 import json  
 
 # Internal imports - các utility modules của project
-from ..utils.config import ConfigManager  # Load config từ YAML
-from ..utils.logging_config import get_logger  # Setup structured logging
-from ..utils.data_validation import DataValidator  # Validate data theo schema
+# Internal imports - các utility modules của project
+from utils.config import ConfigManager  # Load config từ YAML
+from utils.logging_config import get_logger  # Setup structured logging
+from utils.data_validation import DataValidator  # Validate data theo schema
 
 # Khởi tạo logger cho module này
 logger = get_logger(__name__)
@@ -130,7 +131,8 @@ class CSVIngestion:
         table = pa.Table.from_pandas(df)
         
         # Đảm bảo file path có extension .parquet
-        parquet_path = f"{output_path.rstrip('.parquet')}.parquet"
+        # removesuffix: chỉ xóa suffix chính xác, không xóa từng ký tự như rstrip
+        parquet_path = f"{output_path.removesuffix('.parquet')}.parquet"
         
         # Ghi Parquet file với compression
         pq.write_table(

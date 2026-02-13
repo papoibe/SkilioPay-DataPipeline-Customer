@@ -1,0 +1,233 @@
+<mxfile host="app.diagrams.net" modified="2025-12-18T00:00:00.000Z" agent="PipelineSkilioPayCustomer-Assistant" version="22.0.0">
+  <diagram id="project-architecture" name="SkilioPay Churn Pipeline">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Nguon du lieu -->
+        <mxCell id="data_source" value="Nguon du lieu ban dau&#10;- File CSV: SkilioMall_Churn&#10;- Vi tri: data/raw/churn_dataset.csv" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="60" y="130" width="200" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- Ingestion -->
+        <mxCell id="ingestion" value="Tang Ingestion (Bronze)&#10;- Script: scripts/run_ingestion.py&#10;- Logic: src/ingestion/csv_ingestion.py&#10;- Tac vu chinh:&#10;   • Doc CSV&#10;   • Kiem tra kich thuoc file&#10;   • (Co the) validate schema&#10;   • Ghi ra Parquet: data/raw/churn_data_*.parquet" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="300" y="115" width="300" height="120" as="geometry"/>
+        </mxCell>
+
+        <!-- Processing -->
+        <mxCell id="processing" value="Tang Processing &amp; Feature Engineering (Silver)&#10;- Script: scripts/run_processing.py&#10;- Pipeline: src/processing/etl_pipeline.py&#10;- Data quality: src/processing/data_quality.py&#10;- Feature eng: src/processing/feature_engineering.py&#10;- Tac vu chinh:&#10;   • Kiem tra chat luong du lieu (completeness, outliers, distribution, ...)&#10;   • Lam sach, cap outlier, remove duplicate&#10;   • Tao cac feature RFM, hanh vi, thoi gian, tuong tac, domain&#10;   • Encode categorical, normalize numeric&#10;- Output: data/processed/churn_processed_*.parquet" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="650" y="90" width="380" height="170" as="geometry"/>
+        </mxCell>
+
+        <!-- Warehouse -->
+        <mxCell id="warehouse" value="Data Warehouse (PostgreSQL, Gold Layer)&#10;- Script: scripts/run_warehouse.py&#10;- Connector/DDL: src/storage/data_warehouse.py&#10;- Schema: churn_prediction&#10;- Bang chinh:&#10;   • users_processed (user da duoc lam sach + normalize)&#10;   • features (feature da encode, dung cho ML &amp; API)&#10;- Bang dim/fact (phuc vu BI):&#10;   • dim_user, dim_date, dim_product, dim_channel, dim_device&#10;   • fact_orders, fact_sessions" style="shape=process;rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="100" width="380" height="190" as="geometry"/>
+        </mxCell>
+
+        <!-- Training -->
+        <mxCell id="training" value="Model Training (ML Pipeline)&#10;- Script: scripts/run_training.py&#10;- Trainer: src/ml/model_trainer.py&#10;- Cau hinh: config/config.yaml&#10;- Tac vu chinh:&#10;   • Lay du lieu tu file processed (hoac DW)&#10;   • Chuan bi du lieu: fill NA, encode, scale&#10;   • Chia train/val/test, train XGBoost&#10;   • Danh gia: accuracy, precision, recall, F1, ROC-AUC&#10;   • Log MLflow: mlruns/&#10;   • Luu model: models/churn_model_latest.joblib" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="300" y="300" width="360" height="170" as="geometry"/>
+        </mxCell>
+
+        <!-- Serving API -->
+        <mxCell id="serving" value="Lop Serving API (Real-time)&#10;- FastAPI: src/serving/api.py&#10;- Khoi tao khi startup:&#10;   • Load model tu: models/churn_model_latest.joblib&#10;   • Ket noi PostgreSQL (Data Warehouse)&#10;- Cac endpoint chinh:&#10;   • GET  /health  → Kiem tra suc khoe API&#10;   • GET  /model/info → Thong tin model &amp; features&#10;   • GET  /predict/{user_id} → Lay features tu DW &amp; predict churn cho user&#10;   • POST /predict → Nhan payload du lieu thô &amp; predict&#10;   • GET  /data/users/{user_id} → Tra ve du lieu chi tiet 1 user tu DW" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#cce5ff;strokeColor=#4b89dc;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="720" y="290" width="380" height="200" as="geometry"/>
+        </mxCell>
+
+        <!-- Client -->
+        <mxCell id="client" value="Client / He thong tieu thu&#10;- Dashboard BI, CRM, he thong marketing&#10;- Co the la:&#10;   • Web app noi bo&#10;   • Script phan tich&#10;   • Tool khac goi API&#10;- Goi cac endpoint:&#10;   • /predict/{user_id} → lay xac suat churn&#10;   • /model/info → xem phien ban model&#10;   • /data/users/{user_id} → xem du lieu nguoi dung" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="320" width="280" height="170" as="geometry"/>
+        </mxCell>
+
+        <!-- Orchestration (Airflow) -->
+        <mxCell id="airflow" value="Orchestration (Airflow DAG)&#10;- File DAG: dags/churn_prediction_pipeline.py&#10;- Vai tro: tu dong hoa pipeline batch&#10;- Cac task chinh (Operator):&#10;   1. ingest_csv  → goi ingestion (CSV → Parquet raw)&#10;   2. process_data → goi ETL + feature engineering (processed)&#10;   3. load_to_warehouse → day processed vao PostgreSQL (users_processed, features)&#10;   4. train_model → train XGBoost, luu model &amp; log MLflow&#10;   5. deploy_model → copy model moi sang models/churn_model_latest.joblib&#10;   6. notify_success / notify_failure → gui email thong bao&#10;- Schedule: @daily (chay hang ngay)" style="swimlane;childLayout=stackLayout;rounded=1;whiteSpace=wrap;html=1;fillColor=#f0f8ff;strokeColor=#7ea6e0;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="40" y="420" width="600" height="170" as="geometry"/>
+        </mxCell>
+
+        <!-- Airflow inner text (for layout) -->
+        <mxCell id="airflow_dummy" value="" style="text;html=1;resizable=0;points=[];align=left;verticalAlign=top;spacing=8;fontSize=12;" vertex="1" parent="airflow">
+          <mxGeometry x="0" y="0" width="600" height="170" as="geometry"/>
+        </mxCell>
+
+        <!-- Edges -->
+        <mxCell id="e1" value="Doc CSV" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6c8ebf;fontSize=11;" edge="1" parent="1" source="data_source" target="ingestion">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e2" value="Parquet raw&#10;data/raw/churn_data_*.parquet" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;fontSize=11;" edge="1" parent="1" source="ingestion" target="processing">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="520" y="150" as="sourcePoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="e3" value="Processed parquet&#10;data/processed/churn_processed_*.parquet" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#d6b656;fontSize=11;" edge="1" parent="1" source="processing" target="warehouse">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e4" value="Data train (X, y)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#b85450;fontSize=11;" edge="1" parent="1" source="processing" target="training">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="640" y="260" as="sourcePoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="e5" value="Model da train&#10;models/churn_model_latest.joblib" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#9673a6;fontSize=11;" edge="1" parent="1" source="training" target="serving">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="640" y="360" as="sourcePoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="e6" value="API HTTP (JSON)&#10;/predict, /model/info, /data/users" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4b89dc;fontSize=11;" edge="1" parent="1" source="serving" target="client">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e7" value="Doc bang&#10;users_processed, features" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4b89dc;fontSize=11;dashed=1;" edge="1" parent="1" source="serving" target="warehouse">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="900" y="260" as="sourcePoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Airflow relations (dashed) -->
+        <mxCell id="e8" value="Task ingest_csv&#10;(PythonOperator/BashOperator)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7ea6e0;fontSize=11;dashed=1;" edge="1" parent="1" source="airflow" target="ingestion">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="320" y="420" as="sourcePoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="e9" value="Task process_data" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7ea6e0;fontSize=11;dashed=1;" edge="1" parent="1" source="airflow" target="processing">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e10" value="Task load_to_warehouse" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7ea6e0;fontSize=11;dashed=1;" edge="1" parent="1" source="airflow" target="warehouse">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e11" value="Task train_model + deploy_model" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7ea6e0;fontSize=11;dashed=1;" edge="1" parent="1" source="airflow" target="training">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Activity Diagram: Batch Pipeline hang ngay -->
+        <mxCell id="activity_batch_lane" value="Activity: Pipeline batch hang ngay (Airflow)" style="swimlane;childLayout=stackLayout;rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7ea6e0;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="720" y="520" width="620" height="210" as="geometry"/>
+        </mxCell>
+
+        <!-- Inner container for layout -->
+        <mxCell id="activity_batch_dummy" value="" style="text;html=1;resizable=0;points=[];align=left;verticalAlign=top;spacing=8;fontSize=12;" vertex="1" parent="activity_batch_lane">
+          <mxGeometry x="0" y="0" width="620" height="210" as="geometry"/>
+        </mxCell>
+
+        <!-- Nodes: batch activity -->
+        <mxCell id="act_batch_start" value="Start&#10;(Airflow scheduler chay DAG hang ngay)" style="ellipse;whiteSpace=wrap;html=1;fillColor=#e1f5fe;strokeColor=#0277bd;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="740" y="540" width="120" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="act_ingest" value="B1: Ingestion CSV&#10;- Doc file CSV tu data/raw&#10;- Kiem tra kich thuoc &amp; du lieu&#10;- Luu Parquet raw" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dcedc8;strokeColor=#558b2f;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="890" y="530" width="180" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="act_process" value="B2: Processing &amp; Feature eng&#10;- Load Parquet raw&#10;- Kiem tra chat luong du lieu&#10;- Lam sach, xu ly outlier, duplicate&#10;- Tao cac feature RFM, hanh vi, thoi gian, tuong tac&#10;- Encode, normalize" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff9c4;strokeColor=#f9a825;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="520" width="210" height="110" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="act_load_dw" value="B3: Load vao Data Warehouse&#10;- Ket noi PostgreSQL&#10;- Upsert vao users_processed&#10;- Upsert vao bang features&#10;- Cap nhat timestamp xu ly" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffebee;strokeColor=#c62828;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="740" y="610" width="220" height="90" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="act_train" value="B4: Train model ML&#10;- Lay du lieu tu file processed hoac DW&#10;- Chuan bi X, y (fill NA, encode, scale)&#10;- Chia train/val/test&#10;- Train XGBoost, tinh metric&#10;- Log MLflow" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8eaf6;strokeColor=#303f9f;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="980" y="640" width="220" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="act_deploy" value="B5: Deploy model moi&#10;- Chon model tot nhat (theo metric)&#10;- Copy sang models/churn_model_latest.joblib&#10;- API se doc model moi o lan khoi dong tiep theo" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f3e5f5;strokeColor=#8e24aa;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1230" y="640" width="220" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="act_batch_end" value="End&#10;(Model &amp; DW duoc cap nhat)" style="ellipse;whiteSpace=wrap;html=1;fillColor=#e1f5fe;strokeColor=#0277bd;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1310" y="560" width="120" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- Edges: batch activity -->
+        <mxCell id="ae1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#90a4ae;fontSize=11;" edge="1" parent="1" source="act_batch_start" target="act_ingest">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ae2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#90a4ae;fontSize=11;" edge="1" parent="1" source="act_ingest" target="act_process">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ae3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#90a4ae;fontSize=11;" edge="1" parent="1" source="act_process" target="act_load_dw">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ae4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#90a4ae;fontSize=11;" edge="1" parent="1" source="act_load_dw" target="act_train">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ae5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#90a4ae;fontSize=11;" edge="1" parent="1" source="act_train" target="act_deploy">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ae6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#90a4ae;fontSize=11;" edge="1" parent="1" source="act_deploy" target="act_batch_end">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Activity Diagram: Request API /predict/{user_id} -->
+        <mxCell id="activity_api_lane" value="Activity: Request API du doan churn /predict/{user_id}" style="swimlane;childLayout=stackLayout;rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#4b89dc;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="40" y="610" width="650" height="210" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="activity_api_dummy" value="" style="text;html=1;resizable=0;points=[];align=left;verticalAlign=top;spacing=8;fontSize=12;" vertex="1" parent="activity_api_lane">
+          <mxGeometry x="0" y="0" width="650" height="210" as="geometry"/>
+        </mxCell>
+
+        <!-- Nodes: API activity -->
+        <mxCell id="act_api_start" value="Client gui request&#10;GET /predict/{user_id}" style="ellipse;whiteSpace=wrap;html=1;fillColor=#e3f2fd;strokeColor=#1565c0;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="630" width="150" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="act_api_validate" value="B1: FastAPI nhan request&#10;- Validate user_id&#10;- Ghi log request" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bbdefb;strokeColor=#1976d2;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="240" y="630" width="180" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="act_api_query_dw" value="B2: Lay du lieu user tu Data Warehouse&#10;- SELECT tu bang features (uu tien)&#10;- Neu khong co, fallback sang users_processed&#10;- Xu ly truong hop user khong ton tai" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#2e7d32;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="450" y="620" width="220" height="110" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="act_api_prepare" value="B3: Chuan hoa du lieu truoc khi predict&#10;- Loai bo cac cot khong can thiet va internal&#10;- Fill missing values (median/mode)&#10;- One-hot encode categorical&#10;- Align dung danh sach feature_columns&#10;- Scale bang StandardScaler" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff9c4;strokeColor=#f9a825;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="710" width="280" height="110" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="act_api_predict" value="B4: Goi model du doan&#10;- model.predict_proba(X_scaled)&#10;- Lay xac suat churn (class = 1)&#10;- Xac dinh class &amp; do tin cay" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8eaf6;strokeColor=#303f9f;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="370" y="740" width="220" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="act_api_response" value="B5: Tra ve JSON response&#10;- user_id&#10;- prediction (xac suat churn)&#10;- prediction_class (0/1)&#10;- confidence&#10;- model_version&#10;- prediction_timestamp" style="ellipse;whiteSpace=wrap;html=1;fillColor=#e3f2fd;strokeColor=#1565c0;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="610" y="710" width="220" height="110" as="geometry"/>
+        </mxCell>
+
+        <!-- Edges: API activity -->
+        <mxCell id="ae_api1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#90a4ae;fontSize=11;" edge="1" parent="1" source="act_api_start" target="act_api_validate">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ae_api2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#90a4ae;fontSize=11;" edge="1" parent="1" source="act_api_validate" target="act_api_query_dw">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ae_api3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#90a4ae;fontSize=11;" edge="1" parent="1" source="act_api_query_dw" target="act_api_prepare">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ae_api4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#90a4ae;fontSize=11;" edge="1" parent="1" source="act_api_prepare" target="act_api_predict">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ae_api5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#90a4ae;fontSize=11;" edge="1" parent="1" source="act_api_predict" target="act_api_response">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
+
+

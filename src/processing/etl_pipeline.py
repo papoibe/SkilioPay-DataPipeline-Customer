@@ -11,10 +11,10 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.impute import SimpleImputer
 import json
 
-from ..utils.config import ConfigManager
-from ..utils.logging_config import get_logger
-from ..utils.data_validation import DataValidator
-from ..utils.cache_manager import PipelineCache
+from utils.config import ConfigManager
+from utils.logging_config import get_logger
+from utils.data_validation import DataValidator
+from utils.cache_manager import PipelineCache
 from .feature_engineering import FeatureEngineer
 from .data_quality import DataQualityChecker
 
@@ -263,7 +263,8 @@ class ETLPipeline:
         table = pa.Table.from_pandas(df)
         
         # Write to Parquet with compression
-        parquet_path = f"{output_path.rstrip('.parquet')}.parquet"
+        # removesuffix: chỉ xóa suffix chính xác, không xóa từng ký tự như rstrip
+        parquet_path = f"{output_path.removesuffix('.parquet')}.parquet"
         pq.write_table(
             table, 
             parquet_path,

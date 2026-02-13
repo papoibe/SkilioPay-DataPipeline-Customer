@@ -1,4 +1,3 @@
-
 # modun quản lý cấu hình
 # load YAML -> cho tất cả module
 # tất cả modun chính gọi để lấy config
@@ -54,8 +53,8 @@ class ConfigManager:
         
         def replace_env_var(match):
             var_name = match.group(1)
-            default_value = match.group(2) if match.group(2) is not None else ""
-            
+            # Nếu có default value thì sử dụng default value, nếu không thì sử dụng empty string
+            default_value = match.group(2) if match.group(2) is not None else "" 
             return os.getenv(var_name, default_value)
         
         return re.sub(pattern, replace_env_var, content)
@@ -107,7 +106,7 @@ class ConfigManager:
             "api",
             "monitoring"
         ]
-        
+        # Kiểm tra xem các section có trong config không
         for section in required_sections:
             if section not in self.config:
                 logger.error(f"Missing required configuration section: {section}")

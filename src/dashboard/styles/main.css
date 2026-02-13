@@ -1,0 +1,195 @@
+/* GLOBAL THEME: Light Mode (LinkedIn/GitHub Style) */
+.stApp {
+    background-color: #f3f2ef;
+    /* LinkedIn Light Gray Background */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* -------------------------------------------------------------------------- */
+/* NAVIGATION BAR (Radio Button Styling) */
+/* -------------------------------------------------------------------------- */
+div[data-testid="stRadio"]>div {
+    background-color: #ffffff;
+    padding: 10px 20px;
+    border-radius: 8px;
+    border: 1px solid #e0e0e0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+}
+
+div[data-testid="stRadio"] label {
+    font-weight: 600 !important;
+    color: #5e5e5e !important;
+    cursor: pointer;
+    font-size: 16px !important;
+}
+
+/* Selected Tab Style */
+div[data-testid="stRadio"] div[role="radiogroup"]>label[data-checked="true"] {
+    color: #0a66c2 !important;
+    /* LinkedIn Blue */
+    border-bottom: 2px solid #0a66c2;
+}
+
+/* -------------------------------------------------------------------------- */
+/* METRIC CARDS (GitHub/LinkedIn Card Style) */
+/* -------------------------------------------------------------------------- */
+div[data-testid="stMetric"] {
+    background-color: #ffffff;
+    border: 1px solid #e1e4e8;
+    /* GitHub Border */
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    transition: box-shadow 0.2s ease-in-out;
+}
+
+div[data-testid="stMetric"]:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+div[data-testid="stMetric"] label {
+    color: #586069 !important;
+    /* GitHub Gray */
+    font-size: 0.85rem !important;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    color: #24292e !important;
+    /* GitHub Black */
+    font-size: 1.8rem !important;
+    font-weight: 700;
+}
+
+/* -------------------------------------------------------------------------- */
+/* TYPOGRAPHY */
+/* -------------------------------------------------------------------------- */
+h1,
+h2,
+h3 {
+    color: #1f1f1f !important;
+    font-weight: 600 !important;
+}
+
+p,
+span,
+div {
+    color: #1f1f1f;
+}
+
+/* -------------------------------------------------------------------------- */
+/* TABS */
+/* -------------------------------------------------------------------------- */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+    background-color: transparent;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.stTabs [data-baseweb="tab"] {
+    border-radius: 6px 6px 0 0;
+    color: #5e5e5e;
+    padding: 8px 16px;
+    font-weight: 500;
+}
+
+.stTabs [aria-selected="true"] {
+    background-color: #ffffff !important;
+    color: #0a66c2 !important;
+    border: 1px solid #e0e0e0;
+    border-bottom: 1px solid #ffffff;
+    /* Hide bottom border to merge with content */
+    margin-bottom: -1px;
+}
+
+/* -------------------------------------------------------------------------- */
+/* INPUTS & WIDGETS */
+/* -------------------------------------------------------------------------- */
+div[data-testid="stTextInput"] input {
+    color: #24292e !important;
+    background-color: #ffffff !important;
+    border: 1px solid #d1d5da;
+}
+
+div[data-testid="stTextInput"] label {
+    color: #24292e !important;
+    font-weight: 600;
+}
+
+div[data-testid="stSelectbox"] div[data-baseweb="select"] {
+    background-color: #ffffff !important;
+    color: #24292e !important;
+    border: 1px solid #d1d5da;
+}
+
+div[data-testid="stSelectbox"] label {
+    color: #24292e !important;
+    font-weight: 600;
+}
+
+/* -------------------------------------------------------------------------- */
+/* DATAFRAMES & TABLES */
+/* -------------------------------------------------------------------------- */
+.stDataFrame {
+    border: 1px solid #e1e4e8;
+    border-radius: 8px;
+    background-color: #ffffff;
+    overflow: hidden;
+}
+
+[data-testid="stDataFrame"] th {
+    background-color: #f6f8fa !important;
+    color: #24292e !important;
+    font-weight: 600 !important;
+}
+
+[data-testid="stDataFrame"] td {
+    color: #24292e !important;
+}
+
+/* -------------------------------------------------------------------------- */
+/* ALERTS (Info, Warning, Error) */
+/* -------------------------------------------------------------------------- */
+div[data-testid="stNotification"] {
+    background-color: #ffffff !important;
+    border: 1px solid #e1e4e8;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+div[data-testid="stNotification"] p {
+    color: #24292e !important;
+}
+
+/* -------------------------------------------------------------------------- */
+/* CONTAINERS / CARDS (Custom Class if used) */
+/* -------------------------------------------------------------------------- */
+.info-card {
+    background-color: #ffffff;
+    border: 1px solid #e1e4e8;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 10px 0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+/* Expander */
+.streamlit-expanderHeader {
+    background-color: #ffffff !important;
+    border: 1px solid #e1e4e8 !important;
+    border-radius: 6px !important;
+    color: #24292e !important;
+    font-weight: 500;
+}
+
+.streamlit-expanderContent {
+    background-color: #ffffff !important;
+    border: 1px solid #e1e4e8;
+    border-top: none;
+    border-bottom-left-radius: 6px;
+    border-bottom-right-radius: 6px;
+}

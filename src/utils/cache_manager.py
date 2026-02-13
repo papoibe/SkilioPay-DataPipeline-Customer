@@ -107,7 +107,8 @@ class PipelineCache:
         cache_key = self._get_cache_key(data_hash, operation, params)
         cache_file = self.cache_dir / f"{cache_key}.pkl"
         
-        ttl = ttl or self.default_ttl
+        # Dùng `is None` thay vì `or` vì ttl=0 là falsy nhưng vẫn là giá trị hợp lệ
+        ttl = self.default_ttl if ttl is None else ttl
         
         try:
             with open(cache_file, 'wb') as f:
@@ -131,11 +132,14 @@ class PipelineCache:
             # Xóa tất cả cache của operation
             for cache_file in self.cache_dir.glob("*.pkl"):
                 try:
+                    # Đọc file trước, đóng file handle, rồi mới xóa
+                    # Trên Windows, không thể xóa file đang mở (file lock)
                     with open(cache_file, 'rb') as f:
                         cached_data = pickle.load(f)
-                        if cached_data.get('operation') == operation:
-                            cache_file.unlink()
-                            self.stats['invalidations'] += 1
+                    # unlink phải nằm NGOÀI `with` để file handle được giải phóng trước
+                    if cached_data.get('operation') == operation:
+                        cache_file.unlink()
+                        self.stats['invalidations'] += 1
                 except Exception:
                     pass
             logger.info(f"Invalidated cache for operation: {operation}")

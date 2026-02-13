@@ -1,0 +1,831 @@
+SkilioMall Churn Prediction - Process Log
+
+================================================================================
+
+1. MỤC TIÊU TỔNG THỂ
+
+Xây dựng một mô hình dự đoán khả năng rời bỏ của từng người dùng Gen Z trên SkilioMall, dựa trên dữ liệu hành vi ẩn danh (browsing, mua hàng, engagement, hỗ trợ, email…), nhằm:
+
+- Ưu tiên những user có rủi ro rời bỏ cao để kích hoạt chiến dịch giữ chân (retention campaign).
+- Tối ưu chi phí marketing và cải thiện CLV (Customer Lifetime Value).
+- Tạo nền tảng ML có thể tích hợp vào pipeline dữ liệu hiện tại (ingestion → ETL → feature store → model → API).
+
+Approach big picture:
+
+- Chuẩn hóa pipeline dữ liệu theo các lớp: raw (CSV/Parquet) → processed (clean, validate, feature engineering) → features (feature store) → model training → model serving (FastAPI).
+- Sử dụng mô hình cây tăng cường (XGBoost / LightGBM / Random Forest) làm baseline, tối ưu cho bài toán tabular với nhiều feature hành vi.
+- Đánh giá bằng ROC-AUC, F1 và specific metrics gắn với business (recall trên nhóm churn thực sự).
+
+================================================================================
+
+2. PROBLEM UNDERSTANDING & FRAMING
+
+SkilioMall là nền tảng e-commerce cho Gen Z, nơi user có hành vi duyệt nhiều, mua ít, dễ bị phân tán.
+
+Vấn đề: nhiều user "chết lâm sàng" – vẫn tồn tại trong hệ thống nhưng không còn quay lại mua sau một thời gian.
+
+Định nghĩa churn: user không mua hàng trong vòng 60 ngày kể từ đơn gần nhất → đây là định nghĩa churn theo hành vi giao dịch, phù hợp với domain e-commerce.
+
+Tại sao quan trọng với business:
+
+- Revenue: mất user = mất doanh thu tương lai + chi phí acquisition ban đầu coi như "đốt".
+- Retention: giữ chân user cũ rẻ hơn kiếm user mới, đặc biệt với Gen Z vốn nhạy cảm với trải nghiệm.
+- UX & sản phẩm: hiểu tại sao user rời bỏ giúp tối ưu UI/UX, promo, content, danh mục sản phẩm.
+- Marketing: mô hình churn score cho phép tạo các segment: "At Risk", "High Value At Risk", "Loyal", từ đó cá nhân hóa chiến dịch.
+
+Scope & Assumptions:
+
+- Dữ liệu ẩn danh: chỉ làm việc với ID dạng U12345 + feature hành vi (sessions, orders, GMV, email, support, review…).
+- Thời gian quan sát: tập trung vào hành vi 30–90 ngày gần nhất + hành vi 2024 (theo schema hiện tại).
+- Không có log real-time đầy đủ, mô hình chạy theo batch (daily) → score cập nhật hàng ngày.
+- Benchmarks: ROC-AUC > 0.80, Recall trên nhóm churn > 0.75 được coi là baseline tốt cho e-commerce.
+
+================================================================================
+
+3. VARIABLES & DATA STRATEGY
+
+3.1 Biến quan trọng (dựa trên schema churn_schema.json & feature engineering hiện tại)
+
+Hành vi sử dụng:
+- sessions_30d, sessions_90d: Số phiên truy cập trong 30/90 ngày gần nhất
+- avg_session_duration_90d: Thời gian trung bình mỗi phiên (giây)
+- median_pages_viewed_30d: Số trang trung bình xem trong 30 ngày
+- search_queries_30d: Số lượt tìm kiếm trong 30 ngày
+- device_mix_ratio: Tỷ lệ sử dụng mobile vs desktop (0-1)
+- app_version_major: Phiên bản app chính (ví dụ: "3.x")
+
+Hành vi mua hàng:
+- orders_30d, orders_90d, orders_2024: Số đơn hàng theo các khoảng thời gian
+- aov_2024: Average Order Value (giá trị đơn hàng trung bình)
+- gmv_2024: Gross Merchandise Value (tổng giá trị hàng hóa)
+- category_diversity_2024: Số danh mục sản phẩm đã mua
+- days_since_last_order: Số ngày kể từ đơn hàng cuối cùng
+- discount_rate_2024: Tỷ lệ giảm giá trung bình
+- refunds_count_2024, refund_rate_2024: Số lần và tỷ lệ hoàn tiền
+
+Experience & Support:
+- support_tickets_2024: Số ticket hỗ trợ khách hàng
+- avg_csat_2024: Điểm hài lòng khách hàng trung bình (1-5)
+- review_count_2024: Số lượt đánh giá
+- avg_review_stars_2024: Điểm sao trung bình (1-5)
+
+Email & engagement marketing:
+- emails_open_rate_90d: Tỷ lệ mở email (0-1)
+- emails_click_rate_90d: Tỷ lệ click email (0-1)
+
+RFM & derived features:
+- rfm_recency, rfm_frequency, rfm_monetary: Điểm RFM cơ bản
+- rfm_segment, rfm_score, rfm_category: Phân đoạn RFM
+- risk_score, engagement_value, clv_proxy: Các chỉ số dẫn xuất
+
+3.2 Tiền xử lý (đã / sẽ làm trong ETLPipeline)
+
+Làm sạch:
+- Drop duplicates: Loại bỏ bản ghi trùng lặp dựa trên user_id
+- Chuẩn hóa type: 
+  - user_id → string (pattern: ^U[0-9]{5}$)
+  - churn_label → int (0 hoặc 1)
+  - app_version_major → string
+
+Thiếu dữ liệu:
+- Numerical: Impute bằng median (ổn định với outlier)
+  - Áp dụng cho: aov_2024, gmv_2024, avg_session_duration_90d, avg_csat_2024, etc.
+- Categorical: Impute bằng mode hoặc "Unknown"
+  - Áp dụng cho: country, marketing_source, app_version_major
+
+Outlier:
+- IQR clipping: Sử dụng phương pháp Interquartile Range (Q1 - 1.5*IQR, Q3 + 1.5*IQR)
+- Áp dụng cho các biến số, tránh ảnh hưởng cực trị đến mô hình
+- Loại trừ: Không clip các biến target (churn_label) và các chỉ số RFM
+
+Chuẩn hóa:
+- StandardScaler: Áp dụng cho tất cả numerical features (trừ target & một số chỉ số "score")
+- Mục đích: Đảm bảo các feature có cùng scale, quan trọng cho các mô hình distance-based
+
+Validation:
+- DataValidator sử dụng churn_schema.json để kiểm tra:
+  - Type checking (integer, string, number)
+  - Range validation (age: 13-100, email rate: 0-1, GMV ≥ 0)
+  - Enum validation (country, marketing_source)
+  - Pattern matching (user_id, app_version_major)
+- Business rules:
+  - days_since_last_order ≤ 365
+  - refund_rate_2024 ≤ 1.0
+  - discount_rate_2024 ≤ 1.0
+
+3.3 Feature Engineering (ý tưởng đã/đang dùng trong feature_engineering.py và bảng features)
+
+Ratios & intensity:
+- session_intensity_30d = sessions_30d / 30: Cường độ phiên truy cập
+- session_intensity_90d = sessions_90d / 90: Cường độ phiên truy cập 90 ngày
+- order_frequency_2024 = orders_2024 / reg_days: Tần suất đặt hàng
+- engagement_ratio = sessions_30d / sessions_90d: Tỷ lệ engagement gần đây
+- email_engagement_score = emails_open_rate_90d * 0.6 + emails_click_rate_90d * 0.4: Điểm tương tác email
+- support_intensity = support_tickets_2024 / orders_2024: Cường độ cần hỗ trợ
+
+Rolling/recency:
+- Buckets cho rfm_recency: 0-7, 8-30, 31-60, >60 ngày
+- last_order_category: Very Recent, Recent, Moderate, Old, Very Old
+- reg_recency_category: New, Recent, Established, Long-term, Veteran
+
+Interaction features:
+- value_per_session = gmv_2024 / sessions_90d: Giá trị mỗi phiên
+- order_efficiency = orders_90d / sessions_90d: Hiệu quả chuyển đổi
+- discount_sensitivity = discount_rate_2024 * orders_2024: Độ nhạy với giảm giá
+- quality_score = avg_csat_2024 * avg_review_stars_2024: Điểm chất lượng
+- risk_score = refund_rate_2024 * support_tickets_2024: Điểm rủi ro
+- engagement_value = sessions_90d * aov_2024: Giá trị tương tác
+
+Domain-specific features:
+- clv_proxy = gmv_2024 * (365 / reg_days): Proxy cho Customer Lifetime Value
+- purchase_consistency = orders_2024 / (reg_days / 30): Tính nhất quán mua hàng
+- diversity_score = category_diversity_2024 / orders_2024: Điểm đa dạng danh mục
+- is_latest_version: Flag sử dụng phiên bản app mới nhất
+- is_mobile_heavy: Flag ưu tiên mobile (device_mix_ratio > 0.7)
+- is_high_value: Flag khách hàng giá trị cao (GMV hoặc AOV > 80th percentile)
+- is_at_risk: Flag rủi ro (days_since_last_order > 90 hoặc sessions_30d == 0 hoặc refund_rate > 0.1)
+
+Categorical encoding:
+- One-hot encoding: Áp dụng cho country, marketing_source, app_version_major
+- Label encoding: Áp dụng cho các biến ordinal như reg_recency_category, last_order_category, rfm_category
+
+3.4 Data Pipeline Architecture
+
+Raw Data (CSV)
+    ↓
+[CSVIngestion] → Validate schema → Add metadata → Save Parquet
+    ↓
+data/raw/*.parquet (Bronze Layer)
+    ↓
+[ETLPipeline] → Validate → Quality Check → Clean → Feature Engineering → Normalize
+    ↓
+data/processed/*.parquet (Silver Layer)
+    ↓
+[DataWarehouse] → Load to PostgreSQL → Create indexes
+    ↓
+[ModelTrainer] → Train/Validate → Save model → Log to MLflow
+    ↓
+models/*.joblib
+    ↓
+[FastAPI] → Load model → Serve predictions → Cache results
+
+================================================================================
+
+4. ALGORITHMS & METHODOLOGY CONSIDERED
+
+4.1 Algorithms được xem xét
+
+4.1.1 XGBoost (XGBClassifier)
+Lý do chọn:
+- Performance: Đạt hiệu suất cao trên bài toán tabular data, đặc biệt với nhiều feature tương tác
+- Scalability: Xử lý được dataset lớn (50,000+ users) với tốc độ nhanh
+- Feature importance: Cung cấp feature importance giúp interpretability
+- Robustness: Xử lý tốt missing values và outliers
+- Hyperparameter tuning: Dễ dàng tối ưu với Optuna
+
+Hyperparameters mặc định (từ config.yaml):
+n_estimators: 100
+max_depth: 6
+learning_rate: 0.1
+subsample: 0.8
+colsample_bytree: 0.8
+
+Early stopping: Sử dụng validation set với early_stopping_rounds=10 để tránh overfitting.
+
+4.1.2 LightGBM (LGBMClassifier)
+Lý do chọn:
+- Speed: Nhanh hơn XGBoost trên dataset lớn nhờ histogram-based algorithm
+- Memory efficiency: Sử dụng ít bộ nhớ hơn, phù hợp với môi trường production
+- Categorical handling: Xử lý tốt categorical features mà không cần one-hot encoding
+- Gradient-based One-Side Sampling (GOSS): Tối ưu cho imbalanced dataset
+
+Hyperparameters tương tự XGBoost nhưng tối ưu cho tốc độ.
+
+4.1.3 Random Forest (RandomForestClassifier)
+Lý do chọn:
+- Interpretability: Dễ hiểu và giải thích hơn so với gradient boosting
+- Stability: Ít nhạy cảm với hyperparameters, ít overfitting
+- Parallelization: Có thể train song song nhiều trees
+- Baseline: Làm baseline để so sánh với các mô hình boosting
+
+Trade-off: Thường có performance thấp hơn XGBoost/LightGBM nhưng ổn định hơn.
+
+4.1.4 Logistic Regression (không triển khai trong version hiện tại)
+Lý do không chọn:
+- Linearity assumption: Giả định tuyến tính không phù hợp với dữ liệu hành vi phức tạp
+- Feature engineering: Cần nhiều feature engineering hơn để capture interactions
+- Performance: Thường thua kém tree-based models trên tabular data
+
+Khi nào nên dùng: Khi cần model rất đơn giản, dễ giải thích, hoặc làm baseline.
+
+4.2 Phương pháp đánh giá
+
+4.2.1 Train-Validation-Test Split
+- Train set: 60% dữ liệu (30,000 users)
+- Validation set: 20% dữ liệu (10,000 users) - dùng cho early stopping và hyperparameter tuning
+- Test set: 20% dữ liệu (10,000 users) - dùng cho đánh giá cuối cùng
+- Stratified split: Đảm bảo tỷ lệ churn giống nhau giữa các set
+
+4.2.2 Cross-Validation
+- Stratified K-Fold: 5-fold cross-validation với stratification
+- Scoring metric: ROC-AUC (phù hợp với imbalanced classification)
+- Mục đích: Đánh giá độ ổn định của mô hình, tránh overfitting
+
+4.2.3 Hyperparameter Optimization
+- Tool: Optuna (Bayesian optimization)
+- Trials: 100 trials cho mỗi algorithm
+- Objective: Maximize ROC-AUC trên validation set
+- Search space:
+  - n_estimators: 100-1000
+  - max_depth: 3-10
+  - learning_rate: 0.01-0.3
+  - subsample: 0.6-1.0
+  - colsample_bytree: 0.6-1.0
+  - reg_alpha, reg_lambda: 0-10 (L1, L2 regularization)
+
+4.3 Model Selection Strategy
+
+Quy trình:
+1. Baseline: Train Random Forest với default parameters
+2. Primary: Train XGBoost với default parameters từ config
+3. Optimization: Tối ưu hyperparameters cho XGBoost bằng Optuna
+4. Comparison: So sánh XGBoost vs LightGBM với cùng hyperparameters
+5. Selection: Chọn model có ROC-AUC cao nhất trên test set, đồng thời đảm bảo recall > 0.75
+
+Cân bằng Performance vs Explainability:
+- Version 1.0: Ưu tiên performance (XGBoost/LightGBM) vì cần baseline tốt
+- Version 2.0: Có thể thêm SHAP values để giải thích predictions
+- Version 3.0: Xem xét model ensemble hoặc neural networks nếu cần performance cao hơn
+
+4.4 Model Training Pipeline
+
+Triển khai trong model_trainer.py:
+
+1. Data Preparation:
+   - Load processed Parquet từ data/processed/
+   - Encode categorical features (one-hot hoặc label encoding)
+   - Handle missing values (median imputation)
+   - Scale features với StandardScaler
+
+2. Training:
+   - Split data (train/val/test)
+   - Initialize model với hyperparameters
+   - Train với early stopping (nếu có)
+   - Log metrics vào MLflow
+
+3. Evaluation:
+   - Tính metrics trên train/val/test sets
+   - Cross-validation với 5-fold
+   - Feature importance analysis
+   - Confusion matrix và classification report
+
+4. Model Persistence:
+   - Save model + scaler + feature columns vào models/*.joblib
+   - Log model artifact vào MLflow
+   - Version control với timestamp
+
+================================================================================
+
+5. EVALUATION METRICS & SUCCESS CRITERIA
+
+5.1 Metrics được sử dụng
+
+5.1.1 ROC-AUC (Receiver Operating Characteristic - Area Under Curve)
+Định nghĩa: Đo lường khả năng phân biệt giữa churn và non-churn của mô hình.
+
+Tại sao quan trọng:
+- Phù hợp với imbalanced dataset (thường có ít churn hơn non-churn)
+- Không phụ thuộc vào threshold, đánh giá tổng thể performance
+- Business relevance: AUC cao = mô hình có thể rank users theo risk tốt
+
+Target: ROC-AUC > 0.80 (baseline tốt cho e-commerce churn prediction)
+
+Cách giải thích cho non-technical:
+"ROC-AUC đo lường khả năng mô hình phân biệt giữa khách hàng sẽ rời bỏ và khách hàng sẽ ở lại. Điểm 0.80 có nghĩa là mô hình có thể phân loại đúng 80% cặp khách hàng (một churn, một không churn) khi so sánh ngẫu nhiên."
+
+5.1.2 Recall (Sensitivity)
+Định nghĩa: Tỷ lệ churn users được mô hình phát hiện đúng.
+
+Formula: Recall = TP / (TP + FN)
+
+Tại sao quan trọng:
+- Business impact: Recall cao = bỏ sót ít churn users → có thể can thiệp sớm
+- Cost of false negatives: Bỏ sót churn user = mất cơ hội giữ chân = mất revenue
+- Marketing campaigns: Cần recall cao để đảm bảo không bỏ sót user cần giữ chân
+
+Target: Recall trên nhóm churn > 0.75
+
+Cách giải thích cho non-technical:
+"Recall đo lường trong số tất cả khách hàng thực sự rời bỏ, mô hình phát hiện được bao nhiêu phần trăm. Recall 0.75 có nghĩa là mô hình bắt được 75% khách hàng sẽ rời bỏ, chỉ bỏ sót 25%."
+
+5.1.3 Precision
+Định nghĩa: Tỷ lệ users được dự đoán churn thực sự là churn.
+
+Formula: Precision = TP / (TP + FP)
+
+Tại sao quan trọng:
+- Cost of false positives: Dự đoán sai churn = lãng phí marketing budget cho user không cần giữ chân
+- Campaign efficiency: Precision cao = chiến dịch marketing hiệu quả hơn
+
+Trade-off với Recall:
+- Tăng threshold → Precision tăng, Recall giảm
+- Giảm threshold → Precision giảm, Recall tăng
+- Strategy cho SkilioMall: Ưu tiên Recall (không bỏ sót) hơn Precision (có thể chấp nhận một số false positives)
+
+5.1.4 F1-Score
+Định nghĩa: Harmonic mean của Precision và Recall.
+
+Formula: F1 = 2 * (Precision * Recall) / (Precision + Recall)
+
+Tại sao quan trọng:
+- Cân bằng giữa Precision và Recall
+- Hữu ích khi cần một metric tổng hợp
+
+Target: F1 > 0.70 (tùy thuộc vào threshold được chọn)
+
+5.1.5 Accuracy
+Định nghĩa: Tỷ lệ predictions đúng trên tổng số predictions.
+
+Formula: Accuracy = (TP + TN) / (TP + TN + FP + FN)
+
+Hạn chế:
+- Không phù hợp với imbalanced dataset
+- Có thể cao nhưng vẫn bỏ sót nhiều churn users
+
+Sử dụng: Chỉ làm reference, không dùng làm primary metric.
+
+5.2 Business Relevance của Metrics
+
+5.2.1 Tại sao Recall quan trọng hơn Precision cho SkilioMall?
+
+Scenario 1: High Recall, Low Precision
+- Mô hình phát hiện được 80% churn users (Recall = 0.80)
+- Nhưng 40% users được dự đoán churn thực ra không churn (Precision = 0.60)
+- Impact: Marketing team gửi campaign cho nhiều users hơn cần thiết, nhưng không bỏ sót user thực sự cần giữ chân
+- Cost: Chi phí marketing cao hơn, nhưng vẫn có ROI dương nếu giữ được high-value churn users
+
+Scenario 2: Low Recall, High Precision
+- Mô hình chỉ phát hiện được 50% churn users (Recall = 0.50)
+- Nhưng 90% users được dự đoán churn thực sự là churn (Precision = 0.90)
+- Impact: Marketing team chỉ gửi campaign cho users thực sự churn, nhưng bỏ sót 50% churn users
+- Cost: Mất cơ hội giữ chân 50% users → mất revenue lớn
+
+Kết luận: Với SkilioMall, Recall quan trọng hơn vì:
+1. Cost of acquisition cao (Gen Z users khó acquire)
+2. CLV của retained users cao hơn cost của false positive campaigns
+3. Có thể tối ưu Precision sau bằng cách segment users theo churn probability
+
+5.2.2 ROC-AUC và Business Value
+
+High ROC-AUC (0.85+):
+- Mô hình có thể rank users theo risk tốt
+- Marketing team có thể ưu tiên users có probability cao nhất
+- Có thể tạo segments: "Very High Risk" (>0.8), "High Risk" (0.6-0.8), "Medium Risk" (0.4-0.6)
+
+Low ROC-AUC (<0.70):
+- Mô hình không phân biệt tốt giữa churn và non-churn
+- Không thể trust predictions → cần cải thiện features hoặc model
+
+5.3 Trade-offs được xem xét
+
+5.3.1 False Positives vs False Negatives
+
+False Positives (FP): Dự đoán churn nhưng thực ra không churn
+- Cost: Lãng phí marketing budget
+- Impact: Medium (có thể optimize bằng cách tăng threshold)
+
+False Negatives (FN): Bỏ sót users thực sự churn
+- Cost: Mất cơ hội giữ chân → mất revenue tương lai
+- Impact: High (không thể recover sau khi user đã churn)
+
+Decision: Ưu tiên giảm False Negatives (tăng Recall) hơn False Positives.
+
+5.3.2 Threshold Selection
+
+Default threshold: 0.5 (binary classification)
+
+Optimal threshold cho SkilioMall:
+- Có thể chọn threshold thấp hơn (0.3-0.4) để tăng Recall
+- Hoặc sử dụng threshold động dựa trên business constraints:
+  - Nếu marketing budget cao → threshold thấp (0.3) → nhiều users được target
+  - Nếu marketing budget thấp → threshold cao (0.6) → chỉ target users có risk rất cao
+
+Implementation: Có thể thêm endpoint /predict_with_threshold trong FastAPI để cho phép điều chỉnh threshold.
+
+5.4 Success Criteria
+
+5.4.1 Technical Success Criteria
+- ROC-AUC > 0.80 trên test set
+- Recall > 0.75 trên nhóm churn
+- F1-Score > 0.70 (cân bằng Precision và Recall)
+- Cross-validation stability: ROC-AUC std < 0.02 (mô hình ổn định)
+
+5.4.2 Business Success Criteria
+- Actionable insights: Feature importance giúp marketing team hiểu drivers của churn
+- Campaign ROI: Chiến dịch retention dựa trên churn score có ROI > 2.0
+- Time to action: Từ prediction đến campaign activation < 24 giờ
+- Scalability: Mô hình có thể xử lý 100,000+ users trong < 1 giờ
+
+5.4.3 Monitoring Success Criteria
+- Model drift detection: Phát hiện khi model performance giảm > 5%
+- Data quality monitoring: Đảm bảo input data quality score > 0.95
+- Prediction latency: API response time < 100ms cho single prediction
+
+================================================================================
+
+6. NEXT ITERATION / WHAT YOU'D DO WITH MORE TIME
+
+6.1 Features & Techniques sẽ khám phá
+
+6.1.1 Advanced Feature Engineering
+
+Time-series features:
+- Trend analysis: Xu hướng sessions/orders trong 30/60/90 ngày (tăng, giảm, ổn định)
+- Seasonality: Pattern theo ngày trong tuần, tháng (Gen Z có hành vi khác nhau vào cuối tuần)
+- Velocity features: Tốc độ thay đổi (sessions_30d - sessions_60d) / 30
+
+Behavioral sequences:
+- Session patterns: Thời gian giữa các sessions, thời gian trong ngày thường xuyên truy cập
+- Purchase patterns: Khoảng cách giữa các đơn hàng, category switching behavior
+- Engagement decay: Tỷ lệ giảm engagement theo thời gian (sessions_30d / sessions_90d)
+
+Social & network features:
+- Referral network: Số lượng users được refer, quality của referred users
+- Community engagement: Số lượt like/share/review, interaction với brand content
+
+External data integration:
+- Economic indicators: GDP growth, inflation rate (ảnh hưởng đến purchasing power)
+- Seasonal events: Holidays, sales events, product launches
+- Competitor activity: Market share changes, competitor promotions
+
+6.1.2 Advanced ML Techniques
+
+Ensemble methods:
+- Stacking: Kết hợp XGBoost, LightGBM, Random Forest với meta-learner
+- Blending: Weighted average của predictions từ nhiều models
+- Expected improvement: +2-5% ROC-AUC so với single model
+
+Neural Networks:
+- TabNet: Attention-based neural network cho tabular data
+- Deep Learning: Multi-layer perceptron với feature interactions
+- AutoML: Sử dụng AutoGluon hoặc H2O AutoML để tự động tìm best model
+
+Unsupervised learning:
+- Clustering: K-means hoặc DBSCAN để tìm user segments
+- Anomaly detection: Isolation Forest để phát hiện users có hành vi bất thường
+- Dimensionality reduction: PCA hoặc t-SNE để visualize user behavior
+
+6.1.3 Model Interpretability
+
+SHAP (SHapley Additive exPlanations):
+- Giải thích từng prediction: tại sao user này có churn probability cao?
+- Global feature importance: features nào quan trọng nhất overall?
+- Feature interactions: features nào tương tác với nhau?
+
+LIME (Local Interpretable Model-agnostic Explanations):
+- Giải thích local predictions cho từng user
+- Tạo "explanation report" cho marketing team
+
+Partial Dependence Plots (PDP):
+- Visualize ảnh hưởng của từng feature lên churn probability
+- Giúp business team hiểu non-linear relationships
+
+6.2 Scalability Ideas
+
+6.2.1 Real-time Prediction
+
+Current state: Batch prediction hàng ngày
+
+Future state:
+- Streaming pipeline: Kafka → Spark Streaming → Feature Store → Model Serving
+- Real-time features: Tính toán features từ event stream (click, view, add-to-cart)
+- Low-latency API: < 50ms response time với model caching và feature pre-computation
+
+Architecture:
+User Event (Kafka)
+    ↓
+[Spark Streaming] → Compute features → Update feature store
+    ↓
+[FastAPI] → Load features → Predict → Return score
+    ↓
+[CRM Integration] → Trigger campaign if score > threshold
+
+6.2.2 Feature Store
+
+Current state: Features được tính trong ETL pipeline, lưu trong Parquet
+
+Future state:
+- Dedicated Feature Store: Sử dụng Feast hoặc Tecton
+- Online & Offline features:
+  - Offline: Historical features cho training (lưu trong data warehouse)
+  - Online: Real-time features cho serving (lưu trong Redis/DynamoDB)
+- Feature versioning: Track changes trong features, rollback nếu cần
+- Feature monitoring: Detect feature drift, missing values, outliers
+
+6.2.3 Model Serving Optimization
+
+Current state: FastAPI với single model instance
+
+Future state:
+- Model versioning: A/B testing giữa các model versions
+- Canary deployment: Deploy model mới cho 10% traffic trước
+- Model ensemble: Serve multiple models và combine predictions
+- GPU acceleration: Sử dụng GPU cho neural network models (nếu có)
+
+6.2.4 Integration với CRM
+
+Current state: API endpoint trả về churn score
+
+Future state:
+- Webhook integration: Tự động gửi churn alerts đến CRM khi score > threshold
+- Segment sync: Đồng bộ churn segments (At Risk, High Risk) vào CRM
+- Campaign automation: Tự động trigger retention campaigns dựa trên churn score
+- Dashboard: Real-time dashboard hiển thị churn predictions và campaign performance
+
+6.3 Testing Plan cho Larger Datasets
+
+6.3.1 Performance Testing
+
+Current dataset: 50,000 users
+
+Scaling targets:
+- 1M users: Test với 20x data size
+- 10M users: Test với 200x data size
+- 100M users: Test với 2000x data size (nếu có)
+
+Metrics to monitor:
+- Training time: Target < 2 giờ cho 1M users
+- Prediction latency: Target < 100ms cho batch 10K users
+- Memory usage: Target < 32GB RAM cho training
+- Storage: Target < 100GB cho processed data
+
+Optimization strategies:
+- Data sampling: Stratified sampling cho training (giữ nguyên distribution)
+- Feature selection: Chỉ giữ top 50-100 features quan trọng nhất
+- Distributed training: Sử dụng Dask hoặc Spark MLlib
+- Model compression: Quantization, pruning để giảm model size
+
+6.3.2 Data Quality Testing
+
+Missing data scenarios:
+- Test với 10%, 20%, 30% missing values
+- Đảm bảo imputation strategy vẫn hoạt động tốt
+
+Data drift scenarios:
+- Simulate distribution shift (ví dụ: GMV tăng 2x)
+- Test model robustness với data khác training distribution
+
+Outlier scenarios:
+- Test với extreme outliers (ví dụ: user có 1000 orders trong 30 ngày)
+- Đảm bảo outlier handling không làm giảm performance
+
+6.4 Advanced Monitoring & Observability
+
+6.4.1 Model Performance Monitoring
+
+Drift detection:
+- Data drift: Monitor distribution của input features
+- Concept drift: Monitor model performance over time (ROC-AUC, Recall)
+- Prediction drift: Monitor distribution của predictions
+
+Alerting:
+- Alert khi ROC-AUC giảm > 5%
+- Alert khi Recall giảm > 10%
+- Alert khi prediction distribution thay đổi đột ngột
+
+6.4.2 Business Metrics Tracking
+
+Campaign performance:
+- Track ROI của retention campaigns
+- Measure lift: churn rate của users được target vs không được target
+- A/B testing: So sánh campaigns với/không có churn score
+
+User behavior changes:
+- Monitor changes trong user segments (At Risk → Churned)
+- Track conversion: At Risk → Retained sau campaign
+
+6.5 Research Directions
+
+6.5.1 Causal Inference
+
+Current: Predictive model (correlation)
+
+Future: Causal model (causation)
+- Causal ML: Sử dụng DoWhy hoặc EconML để tìm causal effects
+- Intervention analysis: Hiểu tác động của marketing campaigns lên churn
+- Counterfactual predictions: "What if we send this campaign to this user?"
+
+6.5.2 Multi-objective Optimization
+
+Current: Optimize cho churn prediction
+
+Future: Optimize cho multiple objectives
+- Churn prediction + CLV: Tối ưu để giữ chân users có CLV cao nhất
+- Cost-sensitive learning: Weight loss function dựa trên user value
+- Fairness constraints: Đảm bảo model không bias với một segment nào
+
+6.5.3 Personalization
+
+Current: One model for all users
+
+Future: Personalized models
+- User segments: Train separate models cho từng segment (High Value, New Users, etc.)
+- Meta-learning: Learn to adapt model cho từng user type
+- Reinforcement learning: Learn optimal intervention strategies
+
+================================================================================
+
+7. REFLECTION & REFERENCES
+
+7.1 Tóm tắt những gì đã học trong giai đoạn Planning
+
+7.1.1 Kiến trúc Pipeline
+
+Học được:
+- Layered architecture (Bronze/Silver/Gold): Tách biệt raw, processed, và feature data giúp dễ maintain và scale
+- Modular design: Mỗi module (ingestion, ETL, ML, serving) độc lập, dễ test và deploy
+- Configuration-driven: Tất cả config trong YAML giúp dễ thay đổi mà không cần sửa code
+
+Challenges:
+- Cân bằng giữa flexibility và simplicity
+- Quyết định khi nào nên cache vs tính lại features
+
+Best practices áp dụng:
+- Schema validation từ đầu (tránh garbage in, garbage out)
+- Logging và monitoring ngay từ đầu (dễ debug sau này)
+- Version control cho models và data (MLflow, data versioning)
+
+7.1.2 Feature Engineering
+
+Học được:
+- Domain knowledge quan trọng: Hiểu business context (Gen Z behavior, e-commerce patterns) giúp tạo features tốt hơn
+- RFM analysis: Framework cổ điển nhưng vẫn hiệu quả cho churn prediction
+- Interaction features: Features tương tác (value_per_session, engagement_value) thường quan trọng hơn raw features
+
+Challenges:
+- Feature explosion: Quá nhiều features có thể gây overfitting
+- Feature selection: Làm sao chọn features quan trọng nhất?
+
+Best practices áp dụng:
+- Start simple: Bắt đầu với features cơ bản, thêm dần
+- Feature importance analysis: Sử dụng model để chọn features
+- Feature documentation: Ghi lại logic và business meaning của mỗi feature
+
+7.1.3 Model Selection & Evaluation
+
+Học được:
+- Tree-based models phù hợp: XGBoost/LightGBM tốt hơn neural networks cho tabular data
+- Metrics selection: ROC-AUC và Recall quan trọng hơn Accuracy cho imbalanced classification
+- Business alignment: Technical metrics phải map với business goals
+
+Challenges:
+- Trade-off giữa performance và interpretability
+- Chọn threshold phù hợp với business constraints
+
+Best practices áp dụng:
+- Baseline first: Bắt đầu với simple model (Random Forest) làm baseline
+- Iterative improvement: Từ baseline → XGBoost → Hyperparameter tuning
+- Cross-validation: Đảm bảo model ổn định, không overfit
+
+7.1.4 Production Readiness
+
+Học được:
+- MLOps practices: Model versioning (MLflow), monitoring, automated retraining
+- API design: FastAPI với caching, batch prediction, health checks
+- Error handling: Graceful degradation khi model hoặc data có vấn đề
+
+Challenges:
+- Latency vs accuracy: Cân bằng giữa model complexity và response time
+- Data quality: Đảm bảo input data quality trong production
+
+Best practices áp dụng:
+- Health checks: API endpoint để check model và data availability
+- Caching: Cache predictions để giảm latency
+- Logging: Log tất cả predictions và errors để debug
+
+7.2 Third-party Assets & Licenses
+
+7.2.1 Python Libraries
+
+Core ML Libraries:
+- scikit-learn (BSD License): Model training, preprocessing, evaluation
+- XGBoost (Apache 2.0): Gradient boosting model
+- LightGBM (MIT License): Fast gradient boosting model
+- pandas (BSD License): Data manipulation
+- numpy (BSD License): Numerical computing
+
+MLOps & Monitoring:
+- MLflow (Apache 2.0): Model versioning và experiment tracking
+- Optuna (MIT License): Hyperparameter optimization
+- FastAPI (MIT License): API framework
+- structlog (Apache 2.0): Structured logging
+
+Data Processing:
+- PyArrow (Apache 2.0): Parquet file handling
+- SQLAlchemy (MIT License): Database ORM (cho PostgreSQL)
+
+Testing:
+- pytest (MIT License): Unit testing framework
+- pytest-cov (MIT License): Code coverage
+
+7.2.2 Infrastructure & Tools
+
+Orchestration:
+- Apache Airflow (Apache 2.0): Workflow orchestration
+- Docker (Apache 2.0): Containerization
+
+Databases:
+- PostgreSQL (PostgreSQL License): Data warehouse
+- SQLite (Public Domain): MLflow tracking database
+
+Cloud Services (nếu sử dụng):
+- AWS S3 (Commercial): Data storage
+- AWS RDS (Commercial): Managed PostgreSQL
+
+7.2.3 Data & Documentation
+
+Dataset:
+- SkilioMall Churn Dataset: 50,000 users với 30+ features
+- License: Internal use only (proprietary)
+
+Documentation:
+- Project documentation: Tự viết, không có license restrictions
+- Code comments: Inline documentation trong code
+
+7.3 Lessons Learned & Recommendations
+
+7.3.1 Technical Lessons
+
+1. Start with schema validation: Validate data từ đầu giúp tránh bugs sau này
+2. Feature engineering > Model selection: Good features quan trọng hơn advanced models
+3. Monitor từ đầu: Setup logging và monitoring ngay từ đầu, không đợi đến production
+4. Version everything: Models, data, configs - tất cả cần version control
+5. Test với real data: Unit tests tốt, nhưng integration tests với real data quan trọng hơn
+
+7.3.2 Business Lessons
+
+1. Align metrics với business goals: ROC-AUC cao nhưng không giúp business thì vô nghĩa
+2. Communicate với stakeholders: Giải thích model predictions bằng ngôn ngữ business, không technical jargon
+3. Iterate based on feedback: Model version 1.0 không perfect, cần iterate dựa trên feedback từ marketing team
+4. Measure impact: Track ROI của retention campaigns để chứng minh value của model
+
+7.3.3 Recommendations cho Future Work
+
+1. Invest in feature store: Feature store giúp reuse features và maintain consistency
+2. Build interpretability: SHAP/LIME giúp marketing team trust và sử dụng model
+3. Real-time capabilities: Streaming pipeline cho real-time predictions
+4. A/B testing framework: Test model improvements với real users
+5. Causal inference: Move từ predictive sang causal để hiểu interventions
+
+7.4 References & Further Reading
+
+7.4.1 Papers & Research
+
+1. "Predicting Customer Churn in E-commerce" - Review các techniques cho e-commerce churn prediction
+2. "XGBoost: A Scalable Tree Boosting System" - Chen & Guestrin, KDD 2016
+3. "LightGBM: A Highly Efficient Gradient Boosting Decision Tree" - Ke et al., NIPS 2017
+4. "A Unified Approach to Interpreting Model Predictions" - Lundberg & Lee, NIPS 2017 (SHAP)
+
+7.4.2 Books
+
+1. "Hands-On Machine Learning" - Aurélien Géron (O'Reilly)
+2. "The Hundred-Page Machine Learning Book" - Andriy Burkov
+3. "Designing Machine Learning Systems" - Chip Huyen (O'Reilly)
+
+7.4.3 Online Resources
+
+1. MLflow Documentation: https://mlflow.org/docs/latest/index.html
+2. XGBoost Documentation: https://xgboost.readthedocs.io/
+3. FastAPI Documentation: https://fastapi.tiangolo.com/
+4. Apache Airflow Documentation: https://airflow.apache.org/docs/
+
+7.4.4 Industry Best Practices
+
+1. Google's ML Best Practices: https://developers.google.com/machine-learning/guides
+2. AWS Well-Architected Framework - ML: https://aws.amazon.com/architecture/well-architected/
+3. MLOps Community: https://mlops.community/
+
+================================================================================
+
+KẾT LUẬN
+
+Process log này tóm tắt toàn bộ journey từ planning đến implementation của SkilioMall Churn Prediction Pipeline. Từ việc hiểu business problem, thiết kế data strategy, chọn algorithms, đánh giá metrics, đến planning cho future iterations - tất cả đều được document để team có thể reference và iterate tiếp.
+
+Key takeaways:
+- Business-first approach: Mọi technical decision đều map với business goals
+- Iterative improvement: Version 1.0 là baseline, sẽ cải thiện dần dựa trên feedback
+- Production-ready: Từ đầu đã thiết kế với production mindset (monitoring, versioning, scalability)
+- Documentation: Document mọi thứ để team có thể maintain và extend sau này
+
+Next steps:
+1. Deploy model version 1.0 vào staging environment
+2. Test với real data và measure business impact
+3. Collect feedback từ marketing team
+4. Plan version 2.0 với advanced features và interpretability
+
+================================================================================
+
+Document được tạo: 2024
+Last updated: 2024
+Version: 1.0
+

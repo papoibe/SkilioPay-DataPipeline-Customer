@@ -1,0 +1,93 @@
+SkilioPay Churn Prediction Pipeline - Hướng dẫn thứ tự xây dựng dự án
+====================================================================
+
+Mục tiêu: giúp người mới hiểu nên tạo thư mục/file nào trước, lý do và vai trò của từng phần trong kiến trúc pipeline hiện tại.
+
+1) docs/ & README.md (Tài liệu + định hướng tổng quát)
+   - Tại sao tạo trước: thiết lập bức tranh tổng quan về kiến trúc layered (Bronze/Silver/Gold) và các bước pipeline.
+   - Mục đích: ghi lại kiến trúc, cách chạy, các quyết định thiết kế; giúp mọi người thống nhất ngay từ đầu.
+   - Phục vụ: tất cả thành viên team; là tài liệu tham chiếu khi mở rộng sau này.
+
+2) config/ (Định nghĩa cấu hình & schema)
+   2.1 config/config.yaml
+       - Lý do: mọi module (ingestion, ETL, ML, API) đều đọc từ file này → phải có sớm.
+       - Mục đích: chứa đường dẫn dữ liệu, thông số ML, cấu hình API, monitoring, database...
+       - Phục vụ: giúp pipeline dễ cấu hình, không hard-code.
+   2.2 config/schemas/churn_schema.json
+       - Lý do: cần schema để validate dữ liệu từ đầu nhằm tránh rác đổ vào pipeline.
+       - Mục đích: mô tả chi tiết từng cột (type, min/max, enum, required).
+       - Phục vụ: `CSVIngestion`, `ETLPipeline`, `DataValidator`.
+
+3) src/utils/ (Các tiện ích nền tảng)
+   3.1 src/utils/config.py (ConfigManager)
+       - Lý do: mọi module cần load YAML, nên viết class quản lý cấu hình trước.
+       - Mục đích: đọc YAML, thay biến môi trường, cung cấp getter dạng dot.
+       - Phục vụ: ingestion, ETL, ML, serving, Airflow DAG.
+   3.2 src/utils/logging_config.py
+       - Lý do: muốn log thống nhất ngay từ đầu để dễ debug.
+       - Mục đích: setup logging/structlog, tạo PipelineLogger/MetricsLogger.
+       - Phục vụ: toàn bộ code base.
+   3.3 src/utils/data_validation.py
+       - Lý do: cần validate data từ ingestion → nên viết validator sớm.
+       - Mục đích: kiểm schema, kiểu dữ liệu, business rules, completeness.
+       - Phục vụ: ingestion & ETL.
+   3.4 src/utils/cache_manager.py (mới thêm)
+       - Lý do: tối ưu hiệu năng, tránh tính lại feature/prediction.
+       - Mục đích: cung cấp cache file-based với TTL cho ETL & API.
+       - Phục vụ: `ETLPipeline`, `FastAPI prediction`.
+
+4) src/ingestion/ (Layer Bronze)
+   4.1 src/ingestion/csv_ingestion.py
+       - Lý do: cần bước đầu để chuyển CSV → Parquet và kiểm dữ liệu.
+       - Mục đích: đọc CSV theo config, validate bằng schema, thêm metadata, lưu Parquet.
+       - Phục vụ: tạo dữ liệu raw chuẩn cho các bước sau (data/raw/*.parquet).
+
+5) src/processing/ (Layer Silver)
+   5.1 src/processing/etl_pipeline.py
+       - Lý do: biến raw thành processed (clean, quality checks, feature engineering).
+       - Mục đích: triển khai full ETL: extract → validate → clean → feature → normalize → lưu processed Parquet.
+       - Phục vụ: tạo dữ liệu input cho ML + warehouse (data/processed/*.parquet).
+   5.2 src/processing/data_quality.py & feature_engineering.py
+       - Lý do: tách logic quality check & feature engineering, giúp dễ test/mở rộng.
+       - Mục đích: cung cấp các hàm chuyên biệt (report quality, tạo feature RFM...).
+       - Phục vụ: được ETLPipeline gọi; đồng thời có thể tái sử dụng ở notebook/ML.
+
+6) src/storage/ (Layer Gold / Data Warehouse)
+   6.1 src/storage/data_warehouse.py
+       - Lý do: cần chỗ lưu processed data & feature vào Postgres (hoặc DW khác).
+       - Mục đích: tạo bảng users_raw/users_processed/features/model_predictions, tải dữ liệu, tạo index.
+       - Phục vụ: cung cấp data cho BI, ML training, kích hoạt chiến dịch marketing.
+
+7) src/ml/ (ML pipeline)
+   7.1 src/ml/model_trainer.py
+       - Lý do: sau khi đã có processed data, cần module huấn luyện mô hình.
+       - Mục đích: chuẩn hóa dữ liệu, encode, train model (XGBoost/LightGBM/RF), log MLflow, lưu model joblib.
+       - Phục vụ: tạo mô hình predict churn, output under models/.
+
+8) src/serving/ (Model Serving layer)
+   8.1 src/serving/api.py (FastAPI)
+       - Lý do: cần endpoint phục vụ dự đoán thời gian thực (predict & batch predict).
+       - Mục đích: load model mới nhất, chuẩn hóa input, trả churn probability, tích hợp cache prediction.
+       - Phục vụ: CRM, ứng dụng nội bộ sử dụng churn score.
+
+9) dags/ (Orchestration)
+   9.1 dags/churn_prediction_pipeline.py (Airflow DAG)
+       - Lý do: cần orchestration để chạy pipeline hằng ngày tự động.
+       - Mục đích: định nghĩa chuỗi task load_config → ingest → ETL → load warehouse → train → evaluate → deploy → notify.
+       - Phục vụ: vận hành production, đảm bảo pipeline chạy đúng lịch & có cảnh báo.
+
+10) notebooks/ (Nghiên cứu & EDA)
+    10.1 notebooks/01_data_exploration.ipynb
+         - Lý do: nơi thử nghiệm, kiểm tra phân phối, prototype feature trước khi đưa vào code chính.
+         - Mục đích: EDA, trực quan hóa, test ý tưởng feature/ML.
+         - Phục vụ: Data Scientist / Analyst.
+
+11) docs/PERFORMANCE_OPTIMIZATION.md & các tài liệu mở rộng
+    - Lý do: ghi chép best practices, kế hoạch tối ưu (chunking, caching, query optimization).
+    - Mục đích: hướng dẫn team cải thiện hiệu năng, làm cơ sở cho iteration tiếp theo.
+    - Phục vụ: Data Engineer, MLOps, người vận hành.
+
+Ghi chú:
+- Thứ tự trên là gợi ý tuần tự để xây dựng lại dự án từ đầu. Khi dự án đã tồn tại, có thể chỉnh sửa trực tiếp từng module nhưng nên giữ cấu trúc layered như trên.
+- Khi thêm module mới, ưu tiên cập nhật config + docs trước, sau đó mới triển khai code để đảm bảo alignment trong team.
+

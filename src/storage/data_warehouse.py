@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 import json
 
-from ..utils.logging_config import get_logger
+from utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
@@ -30,12 +30,17 @@ class DataWarehouse:
         
     def _build_connection_string(self) -> str:
         # Xây dựng connection string cho PostgreSQL từ config
+        # URL encode password để xử lý ký tự đặc biệt như @, #, %, etc.
+        from urllib.parse import quote_plus
         db_config = self.config.get("storage", {}).get("database", {}).get("postgresql", {})
         
-        return (
-            f"postgresql://{db_config['username']}:{db_config['password']}"
-            f"@{db_config['host']}:{db_config['port']}/{db_config['database']}"
-        )
+        username = quote_plus(db_config.get('username', 'postgres'))
+        password = quote_plus(db_config.get('password', ''))
+        host = db_config.get('host', 'localhost')
+        port = db_config.get('port', 5432)
+        database = db_config.get('database', 'postgres')
+        
+        return f"postgresql://{username}:{password}@{host}:{port}/{database}"
     
     def create_tables(self, table_schemas: Dict[str, str]):
         # Tạo các bảng trong data warehouse
@@ -414,7 +419,7 @@ class ChurnDataWarehouse(DataWarehouse):
             self.create_indexes(table_name, table_indexes)
 
     def _create_dim_fact_tables(self):
-        # Tạo lược đồ dimensional (star-schema đơn giản) để hỗ trợ BI/analytics
+        # Tạo lược đồ dimensional (star-schema) để hỗ trợ BI/analytics
         # Dimensions: dim_user, dim_date, dim_product, dim_channel, dim_device
         # Facts: fact_orders, fact_sessions
         table_schemas = {
@@ -573,7 +578,7 @@ def main():
     args = parser.parse_args()
     
     # Load configuration
-    from ..utils.config import ConfigManager
+    from utils.config import ConfigManager
     config_manager = ConfigManager()
     config = config_manager.load_config(args.config)
     

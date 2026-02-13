@@ -20,14 +20,14 @@ from sklearn.metrics import (
 )
 from sklearn.preprocessing import StandardScaler
 import xgboost as xgb
-from lightgbm import LGBMClassifier
+# from lightgbm import LGBMClassifier  # Tạm thời comment do lỗi với dask
 from sklearn.ensemble import RandomForestClassifier
 import optuna
 import mlflow
 import mlflow.sklearn
 
-from ..utils.logging_config import get_logger
-from ..utils.config import ConfigManager
+from utils.logging_config import get_logger
+from utils.config import ConfigManager
 
 logger = get_logger(__name__)
 
@@ -78,9 +78,12 @@ class ModelTrainer:
         engineered_features = [col for col in df.columns if col not in all_features and col != self.target_column]
         available_features.extend(engineered_features)
         
-        # Remove metadata columns
+        # Remove metadata columns và user_id (không phải feature)
         metadata_columns = [col for col in available_features if col.startswith('_')]
-        available_features = [col for col in available_features if col not in metadata_columns]
+        available_features = [col for col in available_features if col not in metadata_columns and col != 'user_id']
+        
+        # Dedup features (remove duplicates while preserving order)
+        available_features = list(dict.fromkeys(available_features))
         
         self.feature_columns = available_features
         
@@ -92,10 +95,21 @@ class ModelTrainer:
         # Với numerical features: Dùng median (giá trị giữa) - robust với outliers hơn mean
         # Với categorical features: Dùng mode (giá trị xuất hiện nhiều nhất)
         # Lý do: Tránh mất mát thông tin khi xóa rows có missing values, giữ được kích thước dataset
-        X = X.fillna(X.median() if X.select_dtypes(include=[np.number]).shape[1] > 0 else X.mode().iloc[0])
+        # Fillna riêng cho từng loại: numerical dùng median, categorical dùng mode
+        numerical_cols = X.select_dtypes(include=[np.number]).columns
+        categorical_cols = X.select_dtypes(exclude=[np.number]).columns
+        
+        if len(numerical_cols) > 0:
+            X[numerical_cols] = X[numerical_cols].fillna(X[numerical_cols].median())
+        if len(categorical_cols) > 0:
+            for col in categorical_cols:
+                X[col] = X[col].fillna(X[col].mode()[0] if len(X[col].mode()) > 0 else 'Unknown')
         
         # Encode categorical variables
         X = self._encode_categorical_features(X)
+        
+        # Update feature columns after encoding (quan trọng!)
+        self.feature_columns = X.columns.tolist()
         
         logger.info(f"Prepared {len(X)} samples with {len(self.feature_columns)} features")
         logger.info(f"Target distribution: {y.value_counts().to_dict()}")
@@ -110,17 +124,20 @@ class ModelTrainer:
         # drop_first=True: Bỏ 1 category để tránh dummy variable trap (perfect multicollinearity)
         X_encoded = X.copy()
         
-        categorical_cols = self.ml_config.get("features", {}).get("categorical", [])
+        # Lấy tất cả categorical columns (object, category) trừ user_id
+        categorical_cols = [col for col in X_encoded.columns 
+                           if col != 'user_id' and 
+                           (X_encoded[col].dtype == 'object' or 
+                            X_encoded[col].dtype.name == 'category')]
         
         for col in categorical_cols:
-            if col in X_encoded.columns:
-                if X_encoded[col].dtype == 'object':
-                    # One-hot encoding: Tạo binary columns cho mỗi category value
-                    # prefix=col: Thêm tên cột gốc vào tên cột mới (vd: country_VN)
-                    # drop_first=True: Bỏ category đầu tiên để tránh multicollinearity
-                    dummies = pd.get_dummies(X_encoded[col], prefix=col, drop_first=True)
-                    # Nối các binary columns mới vào dataframe, xóa cột categorical gốc
-                    X_encoded = pd.concat([X_encoded.drop(col, axis=1), dummies], axis=1)
+            # One-hot encoding: Tạo binary columns cho mỗi category value
+            # prefix=col: Thêm tên cột gốc vào tên cột mới (vd: country_VN)
+            # drop_first=True: Bỏ category đầu tiên để tránh multicollinearity
+            # dtype=int: Đảm bảo output là int (0/1) thay vì bool (pandas mới default là bool)
+            dummies = pd.get_dummies(X_encoded[col], prefix=col, drop_first=True, dtype=int)
+            # Nối các binary columns mới vào dataframe, xóa cột categorical gốc
+            X_encoded = pd.concat([X_encoded.drop(col, axis=1), dummies], axis=1)
         
         return X_encoded
     
@@ -178,9 +195,37 @@ class ModelTrainer:
         # transform(X_val/X_test): Chỉ transform validation/test bằng mean và std đã tính từ train
         # Lý do: Tránh data leakage - không được dùng thông tin từ val/test để chuẩn hóa train
         # Kết quả: Tất cả features có mean ≈ 0, std ≈ 1, giúp mô hình học tốt hơn
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        X_val_scaled = self.scaler.transform(X_val)
-        X_test_scaled = self.scaler.transform(X_test)
+        # Chỉ scale numerical columns, giữ nguyên categorical (đã được one-hot encoded)
+        # Đảm bảo tất cả columns đều là numeric (categorical đã được one-hot encoded)
+        # Chỉ lấy các columns numeric để tránh lỗi với XGBoost
+        numerical_cols = X_train.select_dtypes(include=[np.number]).columns.tolist()
+        logger.info(f"Scaling {len(numerical_cols)} numerical features out of {len(X_train.columns)} total features")
+        
+        # [FIX] Update feature_columns to match the actual text features used for training
+        # This ensures the list saved in joblib matches model.n_features_in_
+        self.feature_columns = numerical_cols
+
+        
+        X_train_scaled = X_train[numerical_cols].copy()
+        X_val_scaled = X_val[numerical_cols].copy()
+        X_test_scaled = X_test[numerical_cols].copy()
+        
+        # Scale tất cả columns (vì đã filter chỉ numeric)
+        X_train_scaled = pd.DataFrame(
+            self.scaler.fit_transform(X_train_scaled),
+            columns=numerical_cols,
+            index=X_train_scaled.index
+        )
+        X_val_scaled = pd.DataFrame(
+            self.scaler.transform(X_val_scaled),
+            columns=numerical_cols,
+            index=X_val_scaled.index
+        )
+        X_test_scaled = pd.DataFrame(
+            self.scaler.transform(X_test_scaled),
+            columns=numerical_cols,
+            index=X_test_scaled.index
+        )
         
         # Initialize model
         model = self._get_model(algorithm, hyperparameters)
@@ -202,31 +247,46 @@ class ModelTrainer:
                 # eval_set: Đánh giá trên validation set sau mỗi iteration
                 # early_stopping_rounds: Dừng sớm nếu validation score không cải thiện trong 10 rounds
                 # Lý do early stopping: Tránh overfitting, tiết kiệm thời gian training
+                # XGBoost 3.x: early_stopping_rounds không còn được hỗ trợ trong fit()
+                # Có thể set trong __init__ nếu cần, nhưng tạm thời bỏ để tránh lỗi
+                # Convert sang numpy array để tránh lỗi với pandas DataFrame
+                # XGBoost 3.x yêu cầu numpy array, không chấp nhận DataFrame
+                X_train_array = np.asarray(X_train_scaled.values if isinstance(X_train_scaled, pd.DataFrame) else X_train_scaled, dtype=np.float32)
+                X_val_array = np.asarray(X_val_scaled.values if isinstance(X_val_scaled, pd.DataFrame) else X_val_scaled, dtype=np.float32)
+                y_train_array = np.asarray(y_train.values if isinstance(y_train, pd.Series) else y_train, dtype=np.int32)
+                y_val_array = np.asarray(y_val.values if isinstance(y_val, pd.Series) else y_val, dtype=np.int32)
+                
                 model.fit(
-                    X_train_scaled, y_train,
-                    eval_set=[(X_val_scaled, y_val)],
-                    early_stopping_rounds=10,
+                    X_train_array, y_train_array,
+                    eval_set=[(X_val_array, y_val_array)],
                     verbose=False
                 )
             else:
                 # LightGBM hoặc Random Forest: Huấn luyện trực tiếp không có early stopping
                 # LightGBM: Gradient boosting nhanh hơn XGBoost, dùng leaf-wise tree growth
                 # Random Forest: Ensemble của nhiều decision trees độc lập, voting để quyết định
-                model.fit(X_train_scaled, y_train)
+                # Convert sang numpy array để đảm bảo tương thích
+                X_train_array = X_train_scaled.values if isinstance(X_train_scaled, pd.DataFrame) else X_train_scaled
+                model.fit(X_train_array, y_train.values if isinstance(y_train, pd.Series) else y_train)
             
             # Dự đoán: Sử dụng mô hình đã huấn luyện để predict
             # predict(): Trả về class prediction (0 hoặc 1) - dùng threshold mặc định 0.5
             # predict_proba(): Trả về probability (0-1) - xác suất thuộc class 1 (churn)
             # [:, 1]: Lấy cột thứ 2 (probability của class 1 - churn)
             # Lý do cần cả 2: predict() cho class, predict_proba() cho metrics như ROC-AUC
-            y_train_pred = model.predict(X_train_scaled)
-            y_val_pred = model.predict(X_val_scaled)
-            y_test_pred = model.predict(X_test_scaled)
+            # Convert sang numpy array để tránh lỗi với XGBoost 3.x
+            X_train_array = X_train_scaled.values if isinstance(X_train_scaled, pd.DataFrame) else X_train_scaled
+            X_val_array = X_val_scaled.values if isinstance(X_val_scaled, pd.DataFrame) else X_val_scaled
+            X_test_array = X_test_scaled.values if isinstance(X_test_scaled, pd.DataFrame) else X_test_scaled
+            
+            y_train_pred = model.predict(X_train_array)
+            y_val_pred = model.predict(X_val_array)
+            y_test_pred = model.predict(X_test_array)
             
             # Probability predictions: Cần cho ROC-AUC score và có thể điều chỉnh threshold
-            y_train_proba = model.predict_proba(X_train_scaled)[:, 1]
-            y_val_proba = model.predict_proba(X_val_scaled)[:, 1]
-            y_test_proba = model.predict_proba(X_test_scaled)[:, 1]
+            y_train_proba = model.predict_proba(X_train_array)[:, 1]
+            y_val_proba = model.predict_proba(X_val_array)[:, 1]
+            y_test_proba = model.predict_proba(X_test_array)[:, 1]
             
             # Calculate metrics
             train_metrics = self._calculate_metrics(y_train, y_train_pred, y_train_proba)
@@ -285,7 +345,9 @@ class ModelTrainer:
             # LightGBM: Gradient Boosting tối ưu tốc độ với leaf-wise tree growth
             # Ưu điểm: Nhanh hơn XGBoost, ít tốn memory, vẫn giữ độ chính xác cao
             # verbose=-1: Tắt log để output sạch hơn
-            return LGBMClassifier(**hyperparameters, random_state=42, verbose=-1)
+            # Tạm thời comment do lỗi với dask
+            raise ValueError("LightGBM is temporarily disabled due to dependency issues. Please use 'xgboost' or 'random_forest' instead.")
+            # return LGBMClassifier(**hyperparameters, random_state=42, verbose=-1)
         elif algorithm == "random_forest":
             # Random Forest: Ensemble của nhiều decision trees độc lập
             # Cách hoạt động: Mỗi tree train trên subset data và features khác nhau (bootstrap + feature sampling)
